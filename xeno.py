@@ -1,98 +1,108 @@
 import os
 import requests
 import time
-from pathlib import Path
 
-# --- CONFIG ---
-BASE_DIR = Path("AnimalCalls")  # Root directory for saving
-DELAY = 2  # seconds between downloads to be nice to server
+# === CONFIG ===
+BASE_DIR = "xeno_canto_downloads"
+os.makedirs(BASE_DIR, exist_ok=True)
 
-# --- FUNCTIONS ---
-def get_gbif_species(limit=100000):
-    """Fetch species list from GBIF backbone."""
-    url = "https://api.gbif.org/v1/species/search"
-    params = {"rank": "species", "limit": limit}
+GBIF_API = "https://api.gbif.org/v1/species/search"
+XC_API = "https://xeno-canto.org/api/2/recordings?query="
+
+# === Step 1: Fetch all bird species from GBIF ===
+def get_gbif_bird_species():
+    params = {
+        "rank": "SPECIES",
+        "highertaxon_key": 212,   # Aves
+        "limit": 300,             # GBIF max per page
+        "offset": 0
+    }
+
     species_list = []
-    offset = 0
-
     while True:
-        params["offset"] = offset
-        r = requests.get(url, params=params)
+        r = requests.get(GBIF_API, params=params)
+        if r.status_code != 200:
+            print("❌ Error fetching from GBIF")
+            break
         data = r.json()
         results = data.get("results", [])
         if not results:
             break
 
         for sp in results:
-            if all(k in sp for k in ["kingdom", "phylum", "order", "family", "genus", "species"]):
-                species_list.append(sp)
+            if "canonicalName" in sp:
+                species_list.append(sp["canonicalName"])
 
-        offset += limit
-        if offset >= data["count"]:
+        params["offset"] += params["limit"]
+        print(f"📥 Fetched {len(species_list)} species so far...")
+
+        # Stop when no more
+        if params["offset"] >= data.get("count", 0):
             break
+        time.sleep(0.2)  # polite delay
 
     return species_list
 
 
-def get_xc_recordings(scientific_name, page=1):
-    """Fetch recordings from Xeno-Canto by scientific name."""
-    url = f"https://www.xeno-canto.org/api/2/recordings"
-    params = {"query": f"cnt:{scientific_name}", "page": page}
-    r = requests.get(url, params=params)
-    return r.json()
+# === Step 2: Download all calls for a given species ===
+def download_species(species_name):
+    print(f"\n=== Downloading {species_name} ===")
+
+    # Make folder for species
+    folder_name = os.path.join(BASE_DIR, species_name.replace(" ", "_"))
+    os.makedirs(folder_name, exist_ok=True)
+
+    page = 1
+    while True:
+        url = f"{XC_API}{species_name}&page={page}"
+        r = requests.get(url)
+        if r.status_code != 200:
+            print(f"❌ Failed to fetch page {page} for {species_name}")
+            break
+
+        data = r.json()
+        recordings = data.get("recordings", [])
+        if not recordings:
+            break
+
+        for rec in recordings:
+            raw_url = rec.get("file", "")
+            if not raw_url:
+                continue
+            file_url = "https:" + raw_url if raw_url.startswith("//") else raw_url
+
+            rec_id = rec["id"]
+            filename = os.path.join(folder_name, f"{rec_id}.mp3")
+
+            if os.path.exists(filename):
+                continue  # Skip already downloaded
+
+            print(f"⬇️ {filename}")
+            try:
+                audio = requests.get(file_url, timeout=30)
+                if audio.status_code == 200:
+                    with open(filename, "wb") as f:
+                        f.write(audio.content)
+                else:
+                    print(f"⚠️ Failed {file_url} (status {audio.status_code})")
+            except Exception as e:
+                print(f"⚠️ Error downloading {file_url}: {e}")
+
+            time.sleep(1)  # polite delay for XC
+
+        if page >= data.get("numPages", 0):
+            break
+        page += 1
 
 
-def download_recording(url, filepath):
-    """Download MP3 recording if not exists."""
-    if filepath.exists():
-        return
-    try:
-        r = requests.get(url, timeout=30)
-        if r.status_code == 200:
-            with open(filepath, "wb") as f:
-                f.write(r.content)
-            print(f"Saved {filepath}")
-    except Exception as e:
-        print(f"Failed {url}: {e}")
-
-
-def build_path(base, sp):
-    """Build folder path from taxonomy."""
-    return (
-        base
-        / sp["kingdom"]
-        / sp["order"]
-        / sp["family"]
-        / sp["genus"]
-        / sp["species"]
-    )
-
-
-# --- MAIN ---
+# === MAIN ===
 if __name__ == "__main__":
-    print("Fetching species list from GBIF...")
-    species_list = get_gbif_species(limit=300)  # smaller batch for testing
-    print(f"Total species fetched: {len(species_list)}")
+    # 1. Get all bird species from GBIF
+    birds = get_gbif_bird_species()
+    print(f"\n✅ Total bird species fetched from GBIF: {len(birds)}")
 
-    for sp in species_list:
-        sci_name = sp["scientificName"]
-        save_path = build_path(BASE_DIR, sp)
-        save_path.mkdir(parents=True, exist_ok=True)
+    # 2. Download calls for each species
+    for sp in birds:
+        download_species(sp)
 
-        print(f"Searching recordings for {sci_name}...")
-        page = 1
-        while True:
-            data = get_xc_recordings(sci_name, page=page)
-            if "recordings" not in data or not data["recordings"]:
-                break
-
-            for rec in data["recordings"]:
-                file_url = f"https:{rec['file']}"
-                file_name = f"{rec['id']}.mp3"
-                filepath = save_path / file_name
-                download_recording(file_url, filepath)
-                time.sleep(DELAY)
-
-            if page >= int(data["numPages"]):
-                break
-            page += 1
+    print("\n🎉 All downloads complete.")
