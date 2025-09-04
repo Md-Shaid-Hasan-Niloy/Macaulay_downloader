@@ -53,7 +53,7 @@ def download_audio(item, folder):
                 f.write(chunk)
         print(f"✅ Downloaded: {file_name} from {audio_url}")
 
-# --- MAIN ---species_name = "Panthera leo_Lion"   # Format: ScientificName_CommonName
+# --- MAIN ---   # Format: ScientificName_CommonName
 save_dir = "downloads/Macaulay_final"
 os.makedirs(save_dir, exist_ok=True)
 df = load_taxonomy()
