@@ -14,13 +14,12 @@ import time
 import json
 import re
 import duckdb
+from pydub import AudioSegment
+import io
 
 # Always use the real mounted D: drive inside WSL
 main_audio_folder = "/mnt/d/Mints"
 os.makedirs(main_audio_folder, exist_ok=True)
-
-
-
 
 # API Endpoints
 MACAULAY_URL = "https://search.macaulaylibrary.org/api/v1/search"
@@ -107,7 +106,7 @@ def store_metadata(meta):
     ))
 
 # ------------------------------------------------------------------------------
-# Download audio + json metadata
+# Download audio + json metadata and convert to WAV
 def download_audio(species_folder, filename, url, metadata):
     try:
         filepath = os.path.join(species_folder, filename)
@@ -119,8 +118,24 @@ def download_audio(species_folder, filename, url, metadata):
         response = requests.get(url, timeout=20)
         response.raise_for_status()
 
-        with open(filepath, 'wb') as f:
-            f.write(response.content)
+        # Convert to WAV format
+        audio_data = io.BytesIO(response.content)
+        
+        if url.endswith('.mp3'):
+            # Convert MP3 to WAV
+            audio = AudioSegment.from_mp3(audio_data)
+            audio.export(filepath, format="wav")
+        else:
+            # For other formats, try to read and convert to WAV
+            try:
+                audio = AudioSegment.from_file(audio_data)
+                audio.export(filepath, format="wav")
+            except:
+                # If conversion fails, save as is but with .wav extension
+                with open(filepath, 'wb') as f:
+                    f.write(response.content)
+        
+        # Save metadata
         with open(jsonpath, 'w') as f:
             json.dump(metadata, f, indent=2)
 
@@ -157,7 +172,7 @@ def fetch_macaulay(scientific_name, code, species_folder):
             if not asset_id or not audio_url:
                 continue
 
-            filename = f"{sanitize(scientific_name)}_ML_{asset_id}.mp3"
+            filename = f"{sanitize(scientific_name)}_ML_{asset_id}.wav"  # Changed to WAV
             metadata = {
                 "source": "Macaulay Library",
                 "id": str(asset_id),
@@ -195,7 +210,7 @@ def fetch_xeno_canto(common_name, scientific_name, species_folder):
             if file_url.startswith("//"):
                 file_url = "https:" + file_url
 
-            filename = f"{sanitize(common_name)}_XC_{item['id']}.mp3"
+            filename = f"{sanitize(common_name)}_XC_{item['id']}.wav"  # Changed to WAV
             metadata = {
                 "source": "Xeno-Canto",
                 "id": str(item['id']),
@@ -220,6 +235,7 @@ def main():
     print("=====================================")
     print("  Macaulay + Xeno-Canto Downloader")
     print("  Taxonomic Folder Hierarchy: Class > Order > Family > Species")
+    print("  Downloading files in WAV format")
     print("=====================================\n")
 
     df_species = load_taxonomy()
@@ -246,6 +262,3 @@ def main():
 # ------------------------------------------------------------------------------
 if __name__ == "__main__":
     main()
-    
-
-
